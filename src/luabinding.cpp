@@ -206,9 +206,11 @@ void LuaRootApi::bind()
     Application::self().add_fdpoll(defer_timer, [this] {
         assert(defer_fn);
         defer_timer.reset(0, 0);
-        lua.call(*defer_fn);
-        lua.remove_ref(defer_fn);
+        // clear the callback before the call, it can schedule a new one
+        const luabridge::LuaRef* callback = defer_fn;
         defer_fn = nullptr;
+        lua.call(*callback);
+        lua.remove_ref(callback);
     });
 
     add_property("appid", &LuaRootApi::get_appid, &LuaRootApi::set_appid);
@@ -1045,9 +1047,11 @@ luabridge::LuaRef LuaViewerApi::get_image()
     }
     luabridge::LuaRef tbl = entry_to_table(lua, *image->entry);
     tbl["format"] = image->format;
+    const Size img_size = image->size(0);
     tbl["frames"] = image->frames.size();
-    tbl["width"] = image->frames[0].pm.width();
-    tbl["height"] = image->frames[0].pm.height();
+    tbl["width"] = img_size.width;
+    tbl["height"] = img_size.height;
+    tbl["tiled"] = image->is_tiled();
     const luabridge::LuaRef meta = luabridge::newTable(lua);
     for (const auto& [key, value] : image->meta) {
         meta[key] = value;
