@@ -13,11 +13,18 @@
 #include "text.hpp"
 
 #include <cmath>
+#include <cstdlib>
 #include <format>
 #include <utility>
 
 /** Max scale factor. */
 constexpr double MAX_SCALE = 100.0;
+
+// Smooth scrolling parameters
+constexpr size_t SCROLL_INTERVAL = 16; ///< Timer interval in milliseconds
+constexpr double SCROLL_STEP = 50.0;   ///< Pixels per scroll unit
+constexpr double SCROLL_FACTOR = 0.3;  ///< Step factor for smooth scrolling
+constexpr ssize_t SCROLL_FINISH = 1;   ///< Distance to stop animation
 
 Viewer& Viewer::self()
 {
@@ -183,6 +190,8 @@ void Viewer::set_scale(const double sc, const Point& preserve)
         return;
     }
 
+    scroll_stop();
+
     double new_scale = sc;
 
     // check scale limits
@@ -230,6 +239,8 @@ void Viewer::set_position(const Position pos)
         return;
     }
 
+    scroll_stop();
+
     const Size scaled = image->size(frame_index) * scale;
 
     switch (pos) {
@@ -276,10 +287,103 @@ void Viewer::set_position(const Position pos)
 
 void Viewer::set_position(const Point& pos)
 {
+    scroll_stop();
+
     if (image && pos != position) {
         position = pos;
         fixup_position();
     }
+}
+
+void Viewer::scroll(const double delta_h, const double delta_v)
+{
+    if (!image) {
+        return;
+    }
+
+    // accumulate fractional scroll distance to support high-res input
+    scroll_rem_x += delta_h * SCROLL_STEP;
+    scroll_rem_y += delta_v * SCROLL_STEP;
+    const ssize_t step_x = static_cast<ssize_t>(std::llround(scroll_rem_x));
+    const ssize_t step_y = static_cast<ssize_t>(std::llround(scroll_rem_y));
+    scroll_rem_x -= static_cast<double>(step_x);
+    scroll_rem_y -= static_cast<double>(step_y);
+
+    if (step_x == 0 && step_y == 0) {
+        return;
+    }
+
+    if (!scroll_animating) {
+        scroll_target = position;
+        scroll_animating = true;
+        scroll_timer.reset(SCROLL_INTERVAL, 0);
+    }
+
+    const Size scaled = image->size(frame_index) * scale;
+    scroll_target.x += step_x;
+    scroll_target.y += step_y;
+    scroll_target = fix_position(scroll_target, scaled);
+
+    if (scroll_target == position) {
+        scroll_stop();
+    }
+}
+
+void Viewer::scroll_stop()
+{
+    scroll_animating = false;
+    scroll_rem_x = 0.0;
+    scroll_rem_y = 0.0;
+    scroll_timer.reset(0, 0);
+}
+
+void Viewer::scroll_step()
+{
+    if (!image || !scroll_animating) {
+        scroll_stop();
+        return;
+    }
+
+    // target may become unreachable after auto-position changes
+    const Size scaled = image->size(frame_index) * scale;
+    scroll_target = fix_position(scroll_target, scaled);
+    if (scroll_target == position) {
+        scroll_stop();
+        return;
+    }
+
+    const ssize_t delta_x = scroll_target.x - position.x;
+    const ssize_t delta_y = scroll_target.y - position.y;
+    if (std::abs(delta_x) <= SCROLL_FINISH &&
+        std::abs(delta_y) <= SCROLL_FINISH) {
+        position = scroll_target;
+        scroll_stop();
+        fixup_position();
+        return;
+    }
+
+    ssize_t step_x =
+        static_cast<ssize_t>(std::llround(delta_x * SCROLL_FACTOR));
+    ssize_t step_y =
+        static_cast<ssize_t>(std::llround(delta_y * SCROLL_FACTOR));
+    if (step_x == 0) {
+        step_x = delta_x > 0 ? 1 : -1;
+    }
+    if (step_y == 0) {
+        step_y = delta_y > 0 ? 1 : -1;
+    }
+    if (std::abs(step_x) >= std::abs(delta_x)) {
+        step_x = delta_x;
+    }
+    if (std::abs(step_y) >= std::abs(delta_y)) {
+        step_y = delta_y;
+    }
+
+    position.x += step_x;
+    position.y += step_y;
+    fixup_position();
+
+    scroll_timer.reset(SCROLL_INTERVAL, 0);
 }
 
 void Viewer::flip_vertical()
@@ -437,6 +541,9 @@ void Viewer::initialize()
         set_frame(index);
         enable_animation(true);
     });
+    Application::self().add_fdpoll(scroll_timer, [this] {
+        scroll_step();
+    });
 }
 
 void Viewer::activate(const ImageEntryPtr& entry, const Size& wnd)
@@ -455,6 +562,7 @@ void Viewer::activate(const ImageEntryPtr& entry, const Size& wnd)
 
 void Viewer::deactivate()
 {
+    scroll_stop();
     preloader_stop();
 
     // restore cursor and content type
@@ -507,6 +615,8 @@ bool Viewer::set_current(const ImageEntryPtr& entry)
 
 void Viewer::window_resize(const Size& wnd)
 {
+    scroll_stop();
+
     window_size = wnd;
     if (image) {
         if (std::holds_alternative<Scale>(default_scale) &&
@@ -662,6 +772,8 @@ void Viewer::handle_imagelist(const ImageListEvent event,
 
 void Viewer::set_image(const ImagePtr& img)
 {
+    scroll_stop();
+
     if (image && image != img) {
         // put current image to history
         const std::scoped_lock lock(image_pool.mutex);
@@ -783,32 +895,30 @@ ssize_t Viewer::fixup_position(const ssize_t pos, const size_t sz,
     return fixed;
 }
 
+Point Viewer::fix_position(const Point& pos, const Size& scaled) const
+{
+    Point fixed = pos;
+
+    if (auto_pos == AutoPos::Free) {
+        // don't let image to be far out of window
+        fixed.x = std::clamp(pos.x, -static_cast<ssize_t>(scaled.width),
+                             static_cast<ssize_t>(window_size.width));
+        fixed.y = std::clamp(pos.y, -static_cast<ssize_t>(scaled.height),
+                             static_cast<ssize_t>(window_size.height));
+    } else {
+        fixed.x = fixup_position(pos.x, scaled.width, window_size.width);
+        fixed.y = fixup_position(pos.y, scaled.height, window_size.height);
+    }
+
+    return fixed;
+}
+
 void Viewer::fixup_position()
 {
     assert(image);
 
     const Size scaled = image->size(frame_index) * scale;
-
-    if (auto_pos == AutoPos::Free) {
-        // don't let image to be far out of window
-        if (position.x + static_cast<ssize_t>(scaled.width) < 0) {
-            position.x = -static_cast<ssize_t>(scaled.width);
-        }
-        if (std::cmp_greater(position.x, window_size.width)) {
-            position.x = window_size.width;
-        }
-        if (position.y + static_cast<ssize_t>(scaled.height) < 0) {
-            position.y = -static_cast<ssize_t>(scaled.height);
-        }
-        if (std::cmp_greater(position.y, window_size.height)) {
-            position.y = window_size.height;
-        }
-    } else {
-        position.x =
-            fixup_position(position.x, scaled.width, window_size.width);
-        position.y =
-            fixup_position(position.y, scaled.height, window_size.height);
-    }
+    position = fix_position(position, scaled);
 
     Application::redraw();
 }

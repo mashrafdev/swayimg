@@ -137,6 +137,13 @@ public:
     void set_position(const Point& pos);
 
     /**
+     * Scroll image with smooth animation.
+     * @param delta_h horizontal scroll delta
+     * @param delta_v vertical scroll delta
+     */
+    void scroll(const double delta_h, const double delta_v);
+
+    /**
      * Get image position on canvas.
      * @return image position
      */
@@ -267,6 +274,25 @@ private:
     void fixup_position();
 
     /**
+     * Calculate image position clamped to the window.
+     * @param pos desired image position
+     * @param scaled scaled image size
+     * @return fixed position
+     */
+    [[nodiscard]] Point fix_position(const Point& pos,
+                                     const Size& scaled) const;
+
+    /**
+     * Stop smooth scrolling.
+     */
+    void scroll_stop();
+
+    /**
+     * Perform one smooth scrolling step.
+     */
+    void scroll_step();
+
+    /**
      * Fix up image coordinate.
      * @param pos origin position
      * @param sz image size
@@ -350,6 +376,13 @@ protected:
     double focus_factor; ///< Dimming factor outside focus
 
     InputMouse drag; ///< Mouse state for dragging an image across the canvas
+
+    // Smooth scrolling
+    FdTimer scroll_timer;            ///< Smooth scrolling timer
+    Point scroll_target;             ///< Target image position
+    double scroll_rem_x { 0.0 };     ///< Unsent horizontal scroll distance
+    double scroll_rem_y { 0.0 };     ///< Unsent vertical scroll distance
+    bool scroll_animating { false }; ///< Smooth scrolling is active
 
     /** Image pool. */
     struct ImagePool {

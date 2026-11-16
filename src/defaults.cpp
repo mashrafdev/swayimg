@@ -236,10 +236,7 @@ void Defaults::viewer::bind_inputs(Viewer* mode)
             const double scale = mode->get_scale();
             mode->set_scale(scale - scale * delta_v / 10.0, pos);
         } else {
-            Point pos = mode->get_position();
-            pos.x += static_cast<ssize_t>(delta_h * 50.0);
-            pos.y += static_cast<ssize_t>(delta_v * 50.0);
-            mode->set_position(pos);
+            mode->scroll(delta_h, delta_v);
         }
     };
 }
