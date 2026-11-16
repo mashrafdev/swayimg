@@ -28,6 +28,7 @@ RUN apt update && apt upgrade --yes && apt install --no-install-recommends --yes
     librsvg2-dev:arm64 \
     libsixel-dev:arm64 \
     libtiff-dev:arm64 \
+    libvips-dev:arm64 \
     libwayland-dev:arm64 \
     libwebp-dev:arm64 \
     libxkbcommon-dev:arm64 \

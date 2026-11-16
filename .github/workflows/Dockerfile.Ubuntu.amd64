@@ -26,6 +26,7 @@ RUN apt update && apt upgrade --yes && apt install --no-install-recommends --yes
     librsvg2-dev \
     libsixel-dev \
     libtiff-dev \
+    libvips-dev \
     libwayland-dev \
     libwebp-dev \
     libxkbcommon-dev \

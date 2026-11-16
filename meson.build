@@ -107,6 +107,7 @@ else
 endif
 rsvg = dependency('librsvg-2.0', version: '>=2.46', required: get_option('svg'))
 tiff = dependency('libtiff-4', required: get_option('tiff'))
+vips = dependency('vips', required: get_option('vips'))
 sixel = dependency('libsixel', required: get_option('sixel'))
 raw = dependency('libraw', required: get_option('raw'))
 # Krita format
@@ -181,6 +182,7 @@ conf.set('HAVE_LIBJXL', jxl.found() and jxl_threads.found())
 conf.set('HAVE_LIBPNG', png.found())
 conf.set('HAVE_LIBRSVG', rsvg.found())
 conf.set('HAVE_LIBTIFF', tiff.found())
+conf.set('HAVE_LIBVIPS', vips.found())
 conf.set('HAVE_LIBSIXEL', sixel.found())
 conf.set('HAVE_LIBRAW', raw.found())
 conf.set('HAVE_LIBWEBP', webp.found())
@@ -391,6 +393,9 @@ endif
 if tiff.found()
     sources += 'src/formats/tiff.cpp'
 endif
+if vips.found()
+    sources += 'src/formats/vips.cpp'
+endif
 if sixel.found()
     sources += 'src/formats/sixel.cpp'
 endif
@@ -431,6 +436,7 @@ dependencies = [
     rsvg,
     sixel,
     tiff,
+    vips,
     webp,
     video,
 ]
@@ -462,6 +468,7 @@ if get_option('tests').enabled()
             'test/pixmap_test.cpp',
             'test/threadpool_test.cpp',
             'test/urilist_test.cpp',
+            'test/vips_test.cpp',
         ],
         include_directories: ['src', 'src/external'],
         dependencies: dependencies + gtest,

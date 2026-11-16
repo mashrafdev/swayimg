@@ -16,6 +16,7 @@ class ImageFormat {
 public:
     /** Format priorities: defines the order in loaders list. */
     enum class Priority : uint8_t {
+        Top, ///< Generic loaders that must inspect image before others
         Highest,
         High,
         Normal,

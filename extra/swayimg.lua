@@ -178,6 +178,10 @@
 ---  * `rows`: Number of rows in storyboard
 ---  * `padding`: Gap between frames in pixels
 ---  * `label`: Label color in gallery mode
+---* `vips`:
+---  * `enable`: Enable decoder for very large images
+---  * `max_size`: Max width and height of the decoded image in pixels
+---  * `threshold`: Source image size threshold in megapixels
 ---@field format_conf table
 ---
 ---Window title.

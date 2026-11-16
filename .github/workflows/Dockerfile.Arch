@@ -17,6 +17,7 @@ RUN pacman --sync --sysupgrade --refresh --refresh --noconfirm \
     librsvg \
     libsixel \
     libtiff \
+    libvips \
     libwebp \
     libxkbcommon \
     llvm \

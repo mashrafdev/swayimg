@@ -89,6 +89,12 @@ option(
     value: 'auto',
     description: 'Enable video storyboard support',
 )
+option(
+    'vips',
+    type: 'feature',
+    value: 'auto',
+    description: 'Enable libvips support for very large images',
+)
 
 # EXIF support
 option(

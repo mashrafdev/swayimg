@@ -23,5 +23,6 @@ RUN apk add \
     minizip-ng-dev \
     openexr-dev \
     openjpeg-dev \
+    vips-dev \
     wayland-dev \
     wayland-protocols
