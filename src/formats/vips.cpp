@@ -13,13 +13,16 @@
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -113,8 +116,9 @@ Pixmap to_pixmap(VipsImage* image)
  * The image is shown as a small overview until the pyramid cache is ready.
  * The pyramid is built in the background on the first draw and contains
  * lossless, full-resolution tiles at every 2x scale level (a TIFF pyramid).
- * Only the visible part of the appropriate level is decoded for each frame,
- * so memory usage does not depend on the image size.
+ * Visible parts of the appropriate level are decoded by a background worker
+ * and cached with a small margin, so memory usage does not depend on the
+ * image size.
  */
 class TiledImage final : public Image {
 public:
@@ -128,6 +132,34 @@ public:
         std::string loader;           ///< Loader name
     };
 
+private:
+    /** Decoded region request. */
+    struct Request {
+        size_t level;           ///< Pyramid level
+        ssize_t x0, y0, x1, y1; ///< Area in level coordinates
+
+        bool operator==(const Request&) const = default;
+    };
+
+    /** Decoded region of the pyramid. */
+    struct Region {
+        Pixmap pm;              ///< Decoded pixels
+        size_t level;           ///< Pyramid level
+        ssize_t x0, y0, x1, y1; ///< Area in level coordinates
+
+        /**
+         * Check if region covers the requested area.
+         * @param req requested area
+         * @return true if region is fully covered
+         */
+        [[nodiscard]] bool covers(const Request& req) const
+        {
+            return level == req.level && x0 <= req.x0 && y0 <= req.y0 &&
+                x1 >= req.x1 && y1 >= req.y1;
+        }
+    };
+
+public:
     /**
      * Constructor.
      * @param config pyramid parameters
@@ -148,10 +180,19 @@ public:
 
     ~TiledImage() override
     {
-        std::lock_guard lock(state->mutex);
-        state->stop = true;
-        if (state->source) {
-            vips_image_set_kill(state->source, TRUE);
+        {
+            const std::lock_guard lock(state->mutex);
+            state->stop = true;
+            if (state->source) {
+                vips_image_set_kill(state->source, TRUE);
+            }
+            for (const auto& level : state->levels) {
+                vips_image_set_kill(level.get(), TRUE);
+            }
+        }
+        state->cv.notify_all();
+        if (state->worker.joinable()) {
+            state->worker.join();
         }
     }
 
@@ -162,21 +203,13 @@ public:
             return;
         }
 
+        ensure_worker();
+
         bool ready;
         {
             const std::lock_guard lock(state->mutex);
             ready = state->ready;
-            if (!ready && !state->failed && !state->started) {
-                state->started = true;
-                Log::verbose("libvips: building tiled pyramid {}x{}: {}",
-                             cfg.size.width, cfg.size.height,
-                             cfg.cache.string());
-                std::thread([st = state, conf = cfg] {
-                    build(st, conf);
-                }).detach();
-            }
         }
-
         if (!ready) {
             draw_overview(target, scale, x, y);
             return;
@@ -205,6 +238,12 @@ public:
             return;
         }
 
+        // keep the visible area, the margin is only needed for decoding
+        const double vx0 = sx0;
+        const double vy0 = sy0;
+        const double vx1 = sx1;
+        const double vy1 = sy1;
+
         // add a margin to make small panning steps cheap
         constexpr double MARGIN = 128.0;
         const double margin = MARGIN / scale;
@@ -222,68 +261,66 @@ public:
             }
         }
 
-        const std::lock_guard lock(state->mutex);
-        if (!state->ready || state->levels.empty()) {
-            return;
-        }
-        if (level >= state->levels.size()) {
-            level = state->levels.size() - 1;
-        }
-
-        const uint64_t factor = uint64_t(1) << level;
-        const double factor_d = static_cast<double>(factor);
-        VipsImage* level_img = state->levels[level].get();
-        const ssize_t level_width = vips_image_get_width(level_img);
-        const ssize_t level_height = vips_image_get_height(level_img);
-
-        ssize_t lx0 = static_cast<ssize_t>(std::floor(sx0 / factor_d));
-        ssize_t ly0 = static_cast<ssize_t>(std::floor(sy0 / factor_d));
-        ssize_t lx1 = static_cast<ssize_t>(std::ceil(sx1 / factor_d));
-        ssize_t ly1 = static_cast<ssize_t>(std::ceil(sy1 / factor_d));
-        lx0 = std::clamp<ssize_t>(lx0, 0, level_width - 1);
-        ly0 = std::clamp<ssize_t>(ly0, 0, level_height - 1);
-        lx1 = std::clamp<ssize_t>(lx1, lx0 + 1, level_width);
-        ly1 = std::clamp<ssize_t>(ly1, ly0 + 1, level_height);
-
-        // reuse the previously decoded region if it covers the requested area
-        const bool cache_hit = region_level == level && region_pm &&
-            region_x0 <= lx0 && region_y0 <= ly0 && region_x1 >= lx1 &&
-            region_y1 >= ly1;
-        if (!cache_hit) {
-            VipsImage* raw = nullptr;
-            if (vips_extract_area(level_img, &raw, lx0, ly0, lx1 - lx0,
-                                  ly1 - ly0, nullptr) != 0) {
-                Log::verbose("libvips: unable to extract image area: {}",
-                             vips_error_buffer());
-                vips_error_clear();
+        std::shared_ptr<const Region> region;
+        bool need_region = false;
+        bool notify = false;
+        {
+            const std::lock_guard lock(state->mutex);
+            if (!state->ready || state->levels.empty()) {
                 return;
             }
-            const VipsImagePtr region(raw);
-
-            Pixmap pm = to_pixmap(region.get());
-            if (!pm) {
-                Log::verbose("libvips: unable to convert image area: {}",
-                             vips_error_buffer());
-                vips_error_clear();
-                return;
+            if (level >= state->levels.size()) {
+                level = state->levels.size() - 1;
             }
 
-            region_pm = std::move(pm);
-            region_level = level;
-            region_x0 = lx0;
-            region_y0 = ly0;
-            region_x1 = lx1;
-            region_y1 = ly1;
+            const uint64_t factor = uint64_t(1) << level;
+            const double factor_d = static_cast<double>(factor);
+            VipsImage* level_img = state->levels[level].get();
+            const ssize_t level_width = vips_image_get_width(level_img);
+            const ssize_t level_height = vips_image_get_height(level_img);
+
+            const auto to_level = [&](const double x0, const double y0,
+                                      const double x1, const double y1) {
+                ssize_t lx0 = static_cast<ssize_t>(std::floor(x0 / factor_d));
+                ssize_t ly0 = static_cast<ssize_t>(std::floor(y0 / factor_d));
+                ssize_t lx1 = static_cast<ssize_t>(std::ceil(x1 / factor_d));
+                ssize_t ly1 = static_cast<ssize_t>(std::ceil(y1 / factor_d));
+                lx0 = std::clamp<ssize_t>(lx0, 0, level_width - 1);
+                ly0 = std::clamp<ssize_t>(ly0, 0, level_height - 1);
+                lx1 = std::clamp<ssize_t>(lx1, lx0 + 1, level_width);
+                ly1 = std::clamp<ssize_t>(ly1, ly0 + 1, level_height);
+                return Request { level, lx0, ly0, lx1, ly1 };
+            };
+
+            // check only the visible area, not the decode margin
+            const Request visible = to_level(vx0, vy0, vx1, vy1);
+            region = state->region;
+            if (!region || !region->covers(visible)) {
+                need_region = true;
+                const Request request = to_level(sx0, sy0, sx1, sy1);
+                const bool in_progress =
+                    (state->working && *state->working == request) ||
+                    (state->failed_request &&
+                     *state->failed_request == request);
+                if (!in_progress &&
+                    (!state->request || *state->request != request)) {
+                    state->request = request;
+                    notify = true;
+                }
+            }
         }
 
-        const ssize_t px =
-            std::llround(static_cast<double>(x) +
-                         static_cast<double>(region_x0) * factor_d * scale);
-        const ssize_t py =
-            std::llround(static_cast<double>(y) +
-                         static_cast<double>(region_y0) * factor_d * scale);
-        Render::self().draw(target, region_pm, { .x = px, .y = py },
-                            scale * factor_d);
+        if (notify) {
+            state->cv.notify_one();
+        }
+
+        Rectangle covered;
+        if (region) {
+            covered = draw_region(target, *region, scale, x, y);
+        }
+        if (need_region) {
+            draw_overview_missing(target, covered, scale, x, y);
+        }
     }
 
     [[nodiscard]] Size size(const size_t /*frame*/) const override
@@ -316,12 +353,18 @@ public:
     bool save(const std::filesystem::path& path,
               const size_t /*frame*/) const override
     {
-        const std::lock_guard lock(state->mutex);
-        if (!state->ready || state->levels.empty()) {
-            return false;
+        VipsImagePtr level;
+        {
+            const std::lock_guard lock(state->mutex);
+            if (!state->ready || state->levels.empty()) {
+                return false;
+            }
+            level.reset(reinterpret_cast<VipsImage*>(
+                g_object_ref(state->levels[0].get())));
         }
 
-        if (vips_pngsave(state->levels[0].get(), path.c_str(), "compression", 6,
+        const std::lock_guard lock(state->vips_mutex);
+        if (vips_pngsave(level.get(), path.c_str(), "compression", 6,
                          nullptr) != 0) {
             Log::error("libvips: unable to export image: {}",
                        vips_error_buffer());
@@ -332,27 +375,230 @@ public:
     }
 
 private:
-    /** Background build state. */
+    /** Background decode state. */
     struct State {
-        std::mutex mutex;
+        std::mutex mutex;                 ///< Sync mutex for state access
+        std::condition_variable cv;       ///< Worker notification
         std::vector<VipsImagePtr> levels; ///< Pyramid levels
         VipsImage* source = nullptr;      ///< Source for cancellation
         bool ready = false;               ///< Pyramid is ready
         bool failed = false;              ///< Build failed
-        bool started = false;             ///< Build thread started
-        bool stop = false;                ///< Stop the build thread
+        bool started = false;             ///< Worker thread started
+        bool stop = false;                ///< Stop the worker thread
+
+        std::thread worker;                    ///< Decode thread
+        std::shared_ptr<const Region> region;  ///< Last decoded region
+        std::optional<Request> request;        ///< Queued decode request
+        std::optional<Request> working;        ///< Current decode request
+        std::optional<Request> failed_request; ///< Last failed request
+        std::mutex vips_mutex;                 ///< Sync libvips calls
     };
 
     Config cfg;                   ///< Pyramid parameters
-    std::shared_ptr<State> state; ///< Background build state
+    std::shared_ptr<State> state; ///< Background decode state
 
-    // last decoded region, used to avoid re-decoding during small pans
-    Pixmap region_pm;
-    size_t region_level = std::numeric_limits<size_t>::max();
-    ssize_t region_x0 = 0;
-    ssize_t region_y0 = 0;
-    ssize_t region_x1 = 0;
-    ssize_t region_y1 = 0;
+    /**
+     * Start the background worker if it is not running.
+     */
+    void ensure_worker()
+    {
+        bool start = false;
+        bool building = false;
+        {
+            const std::lock_guard lock(state->mutex);
+            if (!state->started && !state->failed) {
+                state->started = true;
+                building = !state->ready;
+                start = true;
+            }
+        }
+        if (start) {
+            if (building) {
+                Log::verbose("libvips: building tiled pyramid {}x{}: {}",
+                             cfg.size.width, cfg.size.height,
+                             cfg.cache.string());
+            }
+            state->worker = std::thread([st = state, conf = cfg] {
+                worker(st, conf);
+            });
+        }
+    }
+
+    /**
+     * Decode the requested region.
+     * @param state decode state
+     * @param req region request
+     * @return decoded region or nullptr on errors
+     */
+    static std::shared_ptr<const Region>
+    decode_region(const std::shared_ptr<State>& state, const Request& req)
+    {
+        VipsImagePtr level;
+        {
+            const std::lock_guard lock(state->mutex);
+            if (state->stop || req.level >= state->levels.size()) {
+                return nullptr;
+            }
+            level.reset(reinterpret_cast<VipsImage*>(
+                g_object_ref(state->levels[req.level].get())));
+        }
+
+        const std::lock_guard lock(state->vips_mutex);
+
+        VipsImage* raw = nullptr;
+        if (vips_extract_area(level.get(), &raw, req.x0, req.y0,
+                              req.x1 - req.x0, req.y1 - req.y0, nullptr) != 0) {
+            Log::verbose("libvips: unable to extract image area: {}",
+                         vips_error_buffer());
+            vips_error_clear();
+            return nullptr;
+        }
+        const VipsImagePtr area(raw);
+
+        Pixmap pm = to_pixmap(area.get());
+        if (!pm) {
+            Log::verbose("libvips: unable to convert image area: {}",
+                         vips_error_buffer());
+            vips_error_clear();
+            return nullptr;
+        }
+
+        Region region;
+        region.pm = std::move(pm);
+        region.level = req.level;
+        region.x0 = req.x0;
+        region.y0 = req.y0;
+        region.x1 = req.x1;
+        region.y1 = req.y1;
+        return std::make_shared<Region>(std::move(region));
+    }
+
+    /**
+     * Background worker: build the pyramid and decode visible regions.
+     * @param state decode state
+     * @param cfg pyramid parameters
+     */
+    static void worker(const std::shared_ptr<State>& state, const Config& cfg)
+    {
+        bool build_needed;
+        {
+            const std::lock_guard lock(state->mutex);
+            build_needed = !state->ready && !state->failed && !state->stop;
+        }
+        if (build_needed) {
+            build(state, cfg);
+        }
+
+        {
+            const std::lock_guard lock(state->mutex);
+            if (!state->ready || state->stop) {
+                return;
+            }
+        }
+
+        while (true) {
+            Request req {};
+            {
+                std::unique_lock lock(state->mutex);
+                state->cv.wait(lock, [&] {
+                    return state->stop || state->request.has_value();
+                });
+                if (state->stop) {
+                    return;
+                }
+                req = *state->request;
+                state->request.reset();
+                state->working = req;
+            }
+
+            std::shared_ptr<const Region> region = decode_region(state, req);
+
+            {
+                const std::lock_guard lock(state->mutex);
+                if (state->stop) {
+                    return;
+                }
+                state->working.reset();
+                if (region) {
+                    state->region = std::move(region);
+                    state->failed_request.reset();
+                } else {
+                    state->failed_request = req;
+                }
+            }
+
+            if (region && Application::self().initialized()) {
+                Application::redraw();
+            }
+        }
+    }
+
+    /**
+     * Draw a decoded region.
+     * @param target surface to draw on
+     * @param region decoded region
+     * @param scale image scale factor
+     * @param x,y top-left coordinates on target surface
+     * @return area occupied by the region on the target surface
+     */
+    Rectangle draw_region(Pixmap& target, const Region& region,
+                          const double scale, const ssize_t x,
+                          const ssize_t y) const
+    {
+        const double factor = static_cast<double>(uint64_t(1) << region.level);
+        const double draw_scale = scale * factor;
+        const ssize_t px =
+            std::llround(static_cast<double>(x) +
+                         static_cast<double>(region.x0) * factor * scale);
+        const ssize_t py =
+            std::llround(static_cast<double>(y) +
+                         static_cast<double>(region.y0) * factor * scale);
+
+        Render::self().draw(target, region.pm, { .x = px, .y = py },
+                            draw_scale);
+
+        return Rectangle({ .x = px, .y = py },
+                         static_cast<Size>(region.pm) * draw_scale);
+    }
+
+    /**
+     * Draw the overview in the areas not covered by a decoded region.
+     * @param target surface to draw on
+     * @param covered area already covered by a decoded region
+     * @param scale image scale factor
+     * @param x,y top-left coordinates on target surface
+     */
+    void draw_overview_missing(Pixmap& target, const Rectangle& covered,
+                               const double scale, const ssize_t x,
+                               const ssize_t y) const
+    {
+        const Rectangle window { 0, 0, target.width(), target.height() };
+        const Rectangle visible = covered.intersect(window);
+        if (!visible) {
+            draw_overview(target, scale, x, y);
+            return;
+        }
+
+        const auto draw_part = [&](const ssize_t px, const ssize_t py,
+                                   const size_t pw, const size_t ph) {
+            if (pw && ph) {
+                Pixmap sub = target.submap(Rectangle(px, py, pw, ph));
+                if (sub) {
+                    draw_overview(sub, scale, x - px, y - py);
+                }
+            }
+        };
+
+        const ssize_t right = visible.x + static_cast<ssize_t>(visible.width);
+        const ssize_t bottom = visible.y + static_cast<ssize_t>(visible.height);
+        const size_t right_pos = static_cast<size_t>(right);
+        const size_t bottom_pos = static_cast<size_t>(bottom);
+
+        draw_part(0, 0, target.width(), static_cast<size_t>(visible.y));
+        draw_part(0, bottom, target.width(), target.height() - bottom_pos);
+        draw_part(0, visible.y, static_cast<size_t>(visible.x), visible.height);
+        draw_part(right, visible.y, target.width() - right_pos, visible.height);
+    }
 
     /**
      * Draw the downscaled overview.
