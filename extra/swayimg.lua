@@ -109,6 +109,7 @@
 ---@field frames integer Total number of frames in the image
 ---@field width integer Width of the currently displayed frame
 ---@field height integer Height of the currently displayed frame
+---@field tiled boolean Whether the image is rendered from a tiled source
 ---@field meta table<string, string> Image meta info: EXIF, tags, etc
 
 --------------------------------------------------------------------------------
@@ -180,8 +181,11 @@
 ---  * `label`: Label color in gallery mode
 ---* `vips`:
 ---  * `enable`: Enable decoder for very large images
----  * `max_size`: Max width and height of the decoded image in pixels
+---  * `max_size`: Max width and height of the overview image in pixels
 ---  * `threshold`: Source image size threshold in megapixels
+---  * `tiled`: Use disk-backed tiled pyramid for full-resolution zoom
+---  * `tile_threshold`: Image size threshold for tiled mode in megapixels
+---  * `cache_dir`: Directory for tiled image cache (default: XDG cache)
 ---@field format_conf table
 ---
 ---Window title.

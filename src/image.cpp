@@ -4,6 +4,7 @@
 
 #include "image.hpp"
 
+#include "formatfactory.hpp"
 #include "render.hpp"
 
 #include <cassert>
@@ -40,4 +41,22 @@ void Image::rotate(const size_t angle)
     for (auto& it : frames) {
         it.pm.rotate(angle);
     }
+}
+
+Size Image::size(const size_t frame) const
+{
+    assert(frame < frames.size());
+    return frames[frame].pm;
+}
+
+bool Image::has_alpha(const size_t frame) const
+{
+    assert(frame < frames.size());
+    return frames[frame].pm.format() == Pixmap::ARGB;
+}
+
+bool Image::save(const std::filesystem::path& path, const size_t frame) const
+{
+    assert(frame < frames.size());
+    return FormatFactory::save(frames[frame].pm, {}, path);
 }

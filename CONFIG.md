@@ -343,8 +343,11 @@ Supported parameters:
   * `label`: Label color in gallery mode
 * `vips`:
   * `enable`: Enable decoder for very large images
-  * `max_size`: Max width and height of the decoded image in pixels
+  * `max_size`: Max width and height of the overview image in pixels
   * `threshold`: Source image size threshold in megapixels
+  * `tiled`: Use disk-backed tiled pyramid for full-resolution zoom
+  * `tile_threshold`: Image size threshold for tiled mode in megapixels
+  * `cache_dir`: Directory for tiled image cache (default: XDG cache)
 
 ### swayimg.title
 

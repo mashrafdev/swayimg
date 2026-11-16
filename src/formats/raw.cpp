@@ -103,6 +103,7 @@ public:
         const Data thumb_data {
             .data = raw_thumb->data,
             .size = raw_thumb->data_size,
+            .path = {},
         };
 
         const ImagePtr image = FormatFactory::self().decode(thumb_data);

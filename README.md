@@ -13,7 +13,8 @@ Swayimg is a fully customizable image viewer with [Lua scripting](CONFIG.md) sup
   - HEIF/HEIC (via [libheif](https://github.com/strukturag/libheif));
   - AV1F/AVIFS (via [libavif](https://github.com/AOMediaCodec/libavif));
   - TIFF (via [libtiff](https://libtiff.gitlab.io/libtiff));
-  - Very large (gigapixel) images (via [libvips](https://www.libvips.org));
+  - Very large (gigapixel) images with full-resolution tiled zoom
+    (via [libvips](https://www.libvips.org));
   - Sixel (via [libsixel](https://github.com/saitoha/libsixel));
   - Raw: CRW/CR2, NEF, RAF, etc (via [libraw](https://www.libraw.org));
   - EXR (via [OpenEXR](https://openexr.com));

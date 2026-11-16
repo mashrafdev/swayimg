@@ -36,10 +36,13 @@ swayimg.format_conf = {
     padding = 5,        -- gap between frames in pixels
     label = 0x0affffff  -- label color in gallery mode
   },
-  vips = {              -- very large images
-    enable = true,      -- enable libvips decoder
-    max_size = 4096,    -- max width/height of decoded image
-    threshold = 64      -- source size threshold in megapixels
+  vips = {                -- very large images
+    enable = true,        -- enable libvips decoder
+    max_size = 4096,      -- max width/height of the overview
+    threshold = 64,       -- source size threshold in megapixels
+    tiled = true,         -- use tiled pyramid for full-resolution zoom
+    tile_threshold = 64,  -- tiled mode threshold in megapixels
+    -- cache_dir = "/path/to/cache", -- cache directory (default: XDG cache)
   },
 }
 

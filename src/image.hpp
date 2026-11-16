@@ -74,6 +74,35 @@ public:
      */
     virtual void rotate(const size_t angle);
 
+    /**
+     * Get image size.
+     * @param frame frame index
+     * @return full image size in pixels
+     */
+    [[nodiscard]] virtual Size size(const size_t frame) const;
+
+    /**
+     * Check if image has an alpha channel.
+     * @param frame frame index
+     * @return true if frame has alpha channel
+     */
+    [[nodiscard]] virtual bool has_alpha(const size_t frame) const;
+
+    /**
+     * Check if image is rendered from a tiled source.
+     * @return true if image uses tiled rendering
+     */
+    [[nodiscard]] virtual bool is_tiled() const { return false; }
+
+    /**
+     * Save image to file.
+     * @param path path to file
+     * @param frame frame index
+     * @return true on success
+     */
+    virtual bool save(const std::filesystem::path& path,
+                      const size_t frame) const;
+
 public:
     /** Image frame. */
     struct Frame {

@@ -134,11 +134,8 @@ bool Viewer::reload()
 
 void Viewer::export_frame(const std::filesystem::path& path) const
 {
-    if (image) {
-        const Pixmap& pm = image->frames[frame_index].pm;
-        if (!FormatFactory::save(pm, {}, path)) {
-            Text::self().set_status("Failed to export image");
-        }
+    if (image && !image->save(path, frame_index)) {
+        Text::self().set_status("Failed to export image");
     }
 }
 
@@ -148,10 +145,11 @@ void Viewer::set_scale(const Scale sc)
         return;
     }
 
-    const Pixmap& pm = image->frames[frame_index].pm;
-    const double ratio_w = static_cast<double>(window_size.width) / pm.width();
+    const Size img_size = image->size(frame_index);
+    const double ratio_w =
+        static_cast<double>(window_size.width) / img_size.width;
     const double ratio_h =
-        static_cast<double>(window_size.height) / pm.height();
+        static_cast<double>(window_size.height) / img_size.height;
 
     double abs_sc = 1.0;
     switch (sc) {
@@ -188,8 +186,7 @@ void Viewer::set_scale(const double sc, const Point& preserve)
     double new_scale = sc;
 
     // check scale limits
-    const Pixmap& pm = image->frames[frame_index].pm;
-    const Size scaled = static_cast<Size>(pm) * new_scale;
+    const Size scaled = image->size(frame_index) * new_scale;
     if (!scaled) {
         return;
     }
@@ -233,8 +230,7 @@ void Viewer::set_position(const Position pos)
         return;
     }
 
-    const Pixmap& pm = image->frames[frame_index].pm;
-    const Size scaled = static_cast<Size>(pm) * scale;
+    const Size scaled = image->size(frame_index) * scale;
 
     switch (pos) {
         case Position::Center:
@@ -289,6 +285,11 @@ void Viewer::set_position(const Point& pos)
 void Viewer::flip_vertical()
 {
     if (image) {
+        if (image->is_tiled()) {
+            Text::self().set_status(
+                "Transforms are not supported for tiled images");
+            return;
+        }
         image->flip_vertical();
         Application::redraw();
     }
@@ -297,6 +298,11 @@ void Viewer::flip_vertical()
 void Viewer::flip_horizontal()
 {
     if (image) {
+        if (image->is_tiled()) {
+            Text::self().set_status(
+                "Transforms are not supported for tiled images");
+            return;
+        }
         image->flip_horizontal();
         Application::redraw();
     }
@@ -307,11 +313,17 @@ void Viewer::rotate(const size_t angle)
     assert(angle == 90 || angle == 180 || angle == 270);
 
     if (image) {
+        if (image->is_tiled()) {
+            Text::self().set_status(
+                "Transforms are not supported for tiled images");
+            return;
+        }
+
         image->rotate(angle);
 
-        const Pixmap& pm = image->frames[frame_index].pm;
-        const ssize_t diff = static_cast<ssize_t>(pm.width()) -
-            static_cast<ssize_t>(pm.height());
+        const Size img_size = image->size(frame_index);
+        const ssize_t diff = static_cast<ssize_t>(img_size.width) -
+            static_cast<ssize_t>(img_size.height);
         const ssize_t shift = (scale * diff) / 2;
         position.x -= shift;
         position.y += shift;
@@ -514,11 +526,10 @@ void Viewer::window_redraw(Pixmap& wnd)
         return;
     }
 
-    const Pixmap& pm = image->frames[frame_index].pm;
-    const Rectangle imgr = { position, static_cast<Size>(pm) * scale };
+    const Rectangle imgr = { position, image->size(frame_index) * scale };
 
     // clear image background
-    if (pm.format() == Pixmap::ARGB) {
+    if (image->has_alpha(frame_index)) {
         if (tr_chessboard) {
             wnd.grid(imgr, tr_cbsize, tr_cbcolor[0], tr_cbcolor[1]);
         } else {
@@ -576,8 +587,7 @@ void Viewer::handle_mmove(const InputMouse& input, const Point& pos,
     Point new_pos = position;
 
     if (auto_pos == AutoPos::Follow) {
-        const Pixmap& pm = image->frames[frame_index].pm;
-        const Size scaled = static_cast<Size>(pm) * scale;
+        const Size scaled = image->size(frame_index) * scale;
 
         // pointer on window (relative position)
         double pt_x = static_cast<double>(pos.x) / window_size.width;
@@ -667,7 +677,7 @@ void Viewer::set_image(const ImagePtr& img)
         return;
     }
 
-    const Pixmap& pm = image->frames[0].pm;
+    const Size img_size = image->size(0);
 
     const bool is_animation =
         image->frames.size() > 1 && image->frames[0].duration;
@@ -681,9 +691,9 @@ void Viewer::set_image(const ImagePtr& img)
         std::get<Scale>(default_scale) == Scale::Keep && previmg) {
         // handle "keep scale" mode
         const ssize_t diff_w = static_cast<ssize_t>(previmg.width) -
-            static_cast<ssize_t>(pm.width());
+            static_cast<ssize_t>(img_size.width);
         const ssize_t diff_h = static_cast<ssize_t>(previmg.height) -
-            static_cast<ssize_t>(pm.height());
+            static_cast<ssize_t>(img_size.height);
         position.x += std::floor(scale * diff_w) / 2.0;
         position.y += std::floor(scale * diff_h) / 2.0;
         fixup_position();
@@ -697,7 +707,7 @@ void Viewer::set_image(const ImagePtr& img)
         set_position(default_pos);
     }
 
-    previmg = pm;
+    previmg = img_size;
 
     enable_animation(is_animation);
 
@@ -729,11 +739,13 @@ void Viewer::update_text(const TextUpdate what) const
     }
 
     if (what == TextUpdate::All || what == TextUpdate::Frame) {
-        const Pixmap& pm = image->frames[frame_index].pm;
+        const Size img_size = image->size(frame_index);
         text.set_field(Text::FIELD_FRAME_INDEX,
                        std::to_wstring(frame_index + 1));
-        text.set_field(Text::FIELD_FRAME_WIDTH, std::to_wstring(pm.width()));
-        text.set_field(Text::FIELD_FRAME_HEIGHT, std::to_wstring(pm.height()));
+        text.set_field(Text::FIELD_FRAME_WIDTH,
+                       std::to_wstring(img_size.width));
+        text.set_field(Text::FIELD_FRAME_HEIGHT,
+                       std::to_wstring(img_size.height));
     }
 
     if (what == TextUpdate::All || what == TextUpdate::Scale) {
@@ -775,8 +787,7 @@ void Viewer::fixup_position()
 {
     assert(image);
 
-    const Pixmap& pm = image->frames[frame_index].pm;
-    const Size scaled = static_cast<Size>(pm) * scale;
+    const Size scaled = image->size(frame_index) * scale;
 
     if (auto_pos == AutoPos::Free) {
         // don't let image to be far out of window

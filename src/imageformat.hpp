@@ -7,6 +7,7 @@
 #include "image.hpp"
 
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <unordered_map>
 #include <variant>
@@ -28,6 +29,7 @@ public:
     struct Data {
         const uint8_t* data = nullptr; ///< Data buffer
         size_t size = 0;               ///< Buffer size
+        std::filesystem::path path;    ///< Path to the source file
     };
 
     /** Format config. */

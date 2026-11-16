@@ -55,6 +55,7 @@ struct DataBuffer : public ImageFormat::Data {
             Log::error("No image data in {}", full_path);
             rc = false;
         }
+        path = entry->path;
 
         return rc;
     }

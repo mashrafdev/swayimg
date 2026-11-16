@@ -39,6 +39,7 @@ public:
         const Data png_data = {
             .data = img_data.data(),
             .size = img_data.size(),
+            .path = {},
         };
         ImagePtr image = FormatFactory::self().get("png")->decode(png_data);
 
@@ -67,6 +68,7 @@ public:
         const Data png_data = {
             .data = img_data.data(),
             .size = img_data.size(),
+            .path = {},
         };
         return FormatFactory::self().get("png")->preview(png_data, sz, fill);
     }

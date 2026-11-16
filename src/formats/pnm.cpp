@@ -88,6 +88,7 @@ public:
             const Data px_data = {
                 .data = data.data + offset,
                 .size = data.size - offset,
+                .path = {},
             };
             switch (fmt) {
                 case Format::BitMap:
