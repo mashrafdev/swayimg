@@ -614,7 +614,7 @@ private:
             return;
         }
         const double ov_scale =
-            scale * static_cast<double>(pm.width()) / cfg.size.width;
+            scale * static_cast<double>(cfg.size.width) / pm.width();
         Render::self().draw(target, pm, { .x = x, .y = y }, ov_scale);
     }
 

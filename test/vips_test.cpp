@@ -145,4 +145,119 @@ TEST_F(VipsTest, TiledImage)
     }
 }
 
+TEST_F(VipsTest, TiledOverviewCoversImage)
+{
+    namespace fs = std::filesystem;
+    const fs::path cache_dir =
+        fs::temp_directory_path() / "swayimg-vips-overview-test";
+    fs::create_directories(cache_dir);
+    const fs::path source = cache_dir / "source.png";
+
+    constexpr size_t width = 256;
+    constexpr size_t height = 192;
+    Pixmap src;
+    src.create(Pixmap::ARGB, width, height);
+    src.fill({ 0, 0, width, height }, argb_t(0xff, 0x40, 0x80, 0xc0));
+    ASSERT_TRUE(FormatFactory::save(src, {}, source));
+
+    // force tiled mode with a small overview
+    set_vips_config(0, 32, true, 0, cache_dir.string());
+    const ImagePtr image = load_image(source.c_str());
+    ASSERT_TRUE(image);
+    ASSERT_TRUE(image->is_tiled());
+    ASSERT_LT(image->frames[0].pm.width(), width);
+
+    // the overview is shown until the pyramid and first region are ready
+    Pixmap target;
+    target.create(Pixmap::ARGB, width, height);
+    const argb_t sentinel(0xff, 0xff, 0x00, 0xff);
+    target.fill({ 0, 0, width, height }, sentinel);
+    image->draw(0, target, 1.0, 0, 0);
+
+    size_t holes = 0;
+    for (size_t y = 0; y < height; ++y) {
+        for (size_t x = 0; x < width; ++x) {
+            if (target.at(x, y) == sentinel) {
+                ++holes;
+            }
+        }
+    }
+    EXPECT_EQ(holes, 0U);
+
+    fs::remove(source);
+    for (const auto& entry : fs::directory_iterator(cache_dir)) {
+        fs::remove(entry.path());
+    }
+    fs::remove(cache_dir);
+}
+
+TEST_F(VipsTest, TiledPanFillsUncoveredArea)
+{
+    namespace fs = std::filesystem;
+    const fs::path cache_dir =
+        fs::temp_directory_path() / "swayimg-vips-pan-test";
+    fs::create_directories(cache_dir);
+    const fs::path source = cache_dir / "source.png";
+
+    constexpr size_t width = 2048;
+    constexpr size_t height = 1536;
+    Pixmap src;
+    src.create(Pixmap::ARGB, width, height);
+    for (size_t y = 0; y < height; ++y) {
+        for (size_t x = 0; x < width; ++x) {
+            auto* pixel = reinterpret_cast<argb_t*>(src.ptr(x, y));
+            *pixel = argb_t(0xff, x & 0xff, y & 0xff, (x ^ y) & 0xff);
+        }
+    }
+    ASSERT_TRUE(FormatFactory::save(src, {}, source));
+
+    set_vips_config(0, 128, true, 0, cache_dir.string());
+    const ImagePtr image = load_image(source.c_str());
+    ASSERT_TRUE(image);
+    ASSERT_TRUE(image->is_tiled());
+
+    Pixmap target;
+    target.create(Pixmap::ARGB, 400, 300);
+
+    // move the view and wait until the pyramid and region are decoded
+    image->draw(0, target, 0.5, -200, -150);
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    bool cached = false;
+    while (!cached && std::chrono::steady_clock::now() < deadline) {
+        for (const auto& entry : fs::directory_iterator(cache_dir)) {
+            if (entry.path().extension() == ".tif") {
+                cached = true;
+                break;
+            }
+        }
+        if (!cached) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    EXPECT_TRUE(cached);
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+
+    // jump back: the decoded region covers only part of the visible area
+    const argb_t sentinel(0x00, 0xff, 0x00, 0xff);
+    target.fill({ 0, 0, target.width(), target.height() }, sentinel);
+    image->draw(0, target, 0.5, 0, 0);
+
+    size_t holes = 0;
+    for (size_t y = 0; y < target.height(); ++y) {
+        for (size_t x = 0; x < target.width(); ++x) {
+            if (target.at(x, y).a == 0) {
+                ++holes;
+            }
+        }
+    }
+    EXPECT_EQ(holes, 0U);
+
+    fs::remove(source);
+    for (const auto& entry : fs::directory_iterator(cache_dir)) {
+        fs::remove(entry.path());
+    }
+    fs::remove(cache_dir);
+}
+
 #endif // HAVE_LIBVIPS
